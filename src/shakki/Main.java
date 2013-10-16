@@ -213,6 +213,7 @@ public class Main {
         } catch (ExecutionException e) {
             System.out.println("Exception in algorithm");
         }
+        executor.shutdown();
 
         p.print();
 
