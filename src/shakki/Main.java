@@ -4,12 +4,19 @@
  */
 package shakki;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map; 
+import java.util.Map;
 import java.util.Vector;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import ourevaluator.OurEvaluator;
 import position.Evaluator;
 import position.Position;
@@ -21,6 +28,7 @@ public class Main {
     static Evaluator ye; // your evaluator
 
     static class PositionComparator implements Comparator<Position> {
+
         Map<Position, Double> evaluations = new HashMap<Position, Double>();
 
         PositionComparator(List<Position> positions) {
@@ -55,7 +63,6 @@ public class Main {
         //System.out.println("Pelaaja: "+player+" koko: "+P.size());
         //System.out.println("EnsimmÃ¤inen: "+eval(P.elementAt(0)));
         //System.out.println("Viimeinen: "+eval(P.lastElement()));
-
         if (player == 0) {
             for (int i = 0; i < P.size(); ++i) {
                 alpha = Math.max(alpha, alphabeta(P.elementAt(i), depth - 1, alpha, beta, 1));
@@ -80,24 +87,42 @@ public class Main {
         double alpha = -Double.MAX_VALUE, beta = Double.MAX_VALUE;
         return alphabeta(p, depth, alpha, beta, player);
         /*
-        //return (p.whiteToMove ? -1 : 1) * eval(p);
-        if(depth <= 0) return eval(p);
+         //return (p.whiteToMove ? -1 : 1) * eval(p);
+         if(depth <= 0) return eval(p);
         
-        double val = eval(p);
-        if(Math.abs(val) > 1e8) return val; // prevent king exchange :/
+         double val = eval(p);
+         if(Math.abs(val) > 1e8) return val; // prevent king exchange :/
         
-        double alpha = p.whiteToMove ? 1e12 : -1e12;
+         double alpha = p.whiteToMove ? 1e12 : -1e12;
         
-        Vector<Position> P = p.getNextPositions();
+         Vector<Position> P = p.getNextPositions();
         
-        for(int i = 0; i < P.size(); ++i) {
-        if(p.whiteToMove) {
-        alpha = Math.min(alpha, minmax(P.elementAt(i),depth-1));
-        } else alpha = Math.max(alpha, minmax(P.elementAt(i),depth-1));
-        }
+         for(int i = 0; i < P.size(); ++i) {
+         if(p.whiteToMove) {
+         alpha = Math.min(alpha, minmax(P.elementAt(i),depth-1));
+         } else alpha = Math.max(alpha, minmax(P.elementAt(i),depth-1));
+         }
         
-        return alpha;
+         return alpha;
          */
+    }
+
+    static class MinMax implements Callable<Double> {
+
+        private final Position position;
+        private final int depth;
+        private final int player;
+
+        public MinMax(Position position, int depth, int player) {
+            this.position = position;
+            this.depth = depth;
+            this.player = player;
+        }
+
+        @Override
+        public Double call() throws Exception {
+            return minmax(position, depth, player);
+        }
     }
 
     public static void main(String[] args) {
@@ -108,75 +133,97 @@ public class Main {
         int depth = 5;
         Position p = new Position();
         p.setStartingPosition();
-        p.print();
-
-        System.out.println("Eval: " + oe.eval(p));
 
         long ms = System.currentTimeMillis();
+        int maxMoves = 200;
+        int move = 0;
 
-        while (true) {
-            ce = oe;
-            //System.out.println("Minmax: "+minmax(p,3,(p.whiteToMove?1:0)));
-            ce = ye;
-            Vector<Position> P = p.getNextPositions();
+        int cpuCount = Runtime.getRuntime().availableProcessors();
+        ExecutorService executor = Executors.newFixedThreadPool(cpuCount);
+        System.out.println("using " + cpuCount + " threads");
 
-            double evaluation = (new OurEvaluator()).eval(p);
+        try {
+            while (true) {
+                Vector<Position> P = p.getNextPositions();
 
-            if (p.winner == +1) {
-                System.out.println("White won.");
-                break;
-            }
+                if (p.winner == +1) {
+                    System.out.println("White won.");
+                    break;
+                }
 
-            if (p.winner == -1) {
-                System.out.println("Black won.");
-                break;
-            }
+                if (p.winner == -1) {
+                    System.out.println("Black won.");
+                    break;
+                }
 
-            if (P.size() == 0) {
-                System.out.println("No more available moves");
-                break;
-            }
+                if (P.isEmpty()) {
+                    System.out.println("No more available moves");
+                    break;
+                }
 
-            Position bestPosition = new Position();
-            if (p.whiteToMove) {
-                ce = ye;
-                double max = -1. / 0.;
+                if (move == maxMoves) {
+                    System.out.println("Maximum number of moves used");
+                    break;
+                }
+
+                Position bestPosition = new Position();
+
+                List<Future<Double>> values = new ArrayList<Future<Double>>();
                 for (int i = 0; i < P.size(); ++i) {
-                    double val = minmax(P.elementAt(i), depth, 1);
-                    if (max < val) {
-                        bestPosition = P.elementAt(i);
-                        max = val;
+                    FutureTask<Double> task = new FutureTask<Double>(
+                            new MinMax(P.elementAt(i), depth, p.whiteToMove ? 1 : 0)
+                    );
+                    values.add(task);
+                    executor.execute(task);
+                }
+
+                if (p.whiteToMove) {
+                    ce = ye;
+                    double max = -1. / 0.;
+
+                    for (int i = 0; i < P.size(); ++i) {
+                        double val = values.get(i).get();
+                        if (max < val) {
+                            bestPosition = P.elementAt(i);
+                            max = val;
+                        }
+                    }
+
+                } else {
+                    ce = oe;
+                    double min = 1. / 0.;
+                    for (int i = 0; i < P.size(); ++i) {
+                        double val = values.get(i).get();
+                        if (min > val) {
+                            bestPosition = P.elementAt(i);
+                            min = val;
+                        }
                     }
                 }
-            } else {
-                ce = oe;
-                double min = 1. / 0.;
-                for (int i = 0; i < P.size(); ++i) {
-                    double val = minmax(P.elementAt(i), depth, 0);
-                    if (min > val) {
-                        bestPosition = P.elementAt(i);
-                        min = val;
-                    }
-                }
+
+                assert p.whiteToMove != bestPosition.whiteToMove;
+                p = bestPosition;
+
+                long curtime = System.currentTimeMillis();
+                System.out.println("Move " + ++move + " took " + ((curtime - ms) / 1000.0) + " seconds");
+                ms = curtime;
             }
-
-            assert p.whiteToMove != bestPosition.whiteToMove;
-            p = bestPosition;
-            p.print();
-
-            long curtime = System.currentTimeMillis();
-            System.out.println("Move took " + ((curtime - ms) / 1000.0) + " seconds");
-            ms = curtime;
+        } catch (InterruptedException e) {
+            System.out.println("Interrupted");
+        } catch (ExecutionException e) {
+            System.out.println("Exception in algorithm");
         }
+
+        p.print();
 
         /*
-        for(int i = 0; i < 60; ++i) {
-        System.out.println("----------------");
-        Vector<Position> P = p.getNextPositions();
-        p = P.elementAt((int)(Math.random()*P.size()));
-        p.print();
-        System.out.println("Eval: "+eval(p));
-        }
+         for(int i = 0; i < 60; ++i) {
+         System.out.println("----------------");
+         Vector<Position> P = p.getNextPositions();
+         p = P.elementAt((int)(Math.random()*P.size()));
+         p.print();
+         System.out.println("Eval: "+eval(p));
+         }
          */
     }
 }
